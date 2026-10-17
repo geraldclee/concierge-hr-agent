@@ -121,6 +121,42 @@ style.textContent = `
     background: #fef2f2;
   }
   .answer-card h3 { margin: 0 0 8px; font-size: 1rem; color: #065f46; }
+  .thread { margin-top: 8px; }
+  .thread:empty { display: none; }
+  .turn { margin-top: 20px; }
+  .turn:first-child { margin-top: 12px; }
+  .turn .answer-card { margin-top: 8px; }
+  .question-bubble {
+    margin-left: auto;
+    max-width: 85%;
+    width: fit-content;
+    background: var(--primary);
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 14px 14px 4px 14px;
+    white-space: pre-wrap;
+  }
+  .turn-meta { text-align: right; color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+  .thread-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .thread-header h2 { margin: 0; font-size: 1rem; }
+  .link-btn {
+    background: none;
+    border: none;
+    color: var(--primary);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+    padding: 4px 0;
+  }
+  .link-btn:hover { text-decoration: underline; }
+  .searching { color: var(--muted); font-style: italic; margin-top: 8px; }
   .answer-card.not-found h3 { color: var(--danger); }
   .subtext { color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
   .message { padding: 12px; border-radius: 8px; margin-bottom: 16px; }
@@ -159,6 +195,29 @@ document.body.appendChild(app);
 let currentTab = "ask";
 let adminUnlocked = false;
 
+// Conversation history: [{ question, location, found, text, matchedQuestion, time }]
+const HISTORY_KEY = "hrConversation";
+const PROFILE_KEY = "hrProfile";
+let conversation = loadSession(HISTORY_KEY, []);
+let profile = loadSession(PROFILE_KEY, { email: "", location: "" });
+
+function loadSession(key, fallback) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSession(key, value) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage unavailable (e.g. private mode) - keep in memory only.
+  }
+}
+
 function renderHeader() {
   return `
     <header>
@@ -181,22 +240,48 @@ function renderAskView() {
   return `
     <div class="card">
       <form id="ask-form">
-        <label for="email">Work Email</label>
-        <input id="email" type="email" required placeholder="e.g. employee@company.com" />
+        <div class="two-cols">
+          <div>
+            <label for="email">Work Email</label>
+            <input id="email" type="email" required placeholder="e.g. employee@company.com" value="${escapeAttr(profile.email)}" />
+          </div>
+          <div>
+            <label for="location">Location</label>
+            <select id="location" required>
+              <option value="" disabled ${profile.location ? "" : "selected"}>Select your location</option>
+              ${LOCATIONS.map((l) => `<option value="${l}" ${profile.location === l ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+          </div>
+        </div>
 
-        <label for="location">Location</label>
-        <select id="location" required>
-          <option value="" disabled selected>Select your location</option>
-          ${LOCATIONS.map((l) => `<option value="${l}">${l}</option>`).join("")}
-        </select>
+        <div class="thread-header ${conversation.length ? "" : "hidden"}" id="thread-header">
+          <h2>Conversation</h2>
+          <button type="button" class="link-btn" id="clear-conversation">Clear conversation</button>
+        </div>
+        <div class="thread" id="thread">${conversation.map(renderTurn).join("")}</div>
 
-        <label for="question">Your Question</label>
+        <label for="question">${conversation.length ? "Ask another question" : "Your Question"}</label>
         <textarea id="question" required placeholder="e.g. How many days of annual leave do I get?"></textarea>
 
-        <button type="submit">Find Answer</button>
-        <p class="subtext">Answers are sourced only from uploaded HR documents.</p>
+        <button type="submit" id="ask-submit">Find Answer</button>
+        <p class="subtext">Answers are sourced only from uploaded HR documents. Press Enter to send, Shift+Enter for a new line.</p>
       </form>
-      <div id="answer-area"></div>
+    </div>
+  `;
+}
+
+function renderTurn(turn) {
+  const cls = turn.found ? "answer-card" : "answer-card not-found";
+  const title = turn.error ? "Something went wrong" : turn.found ? "Answer" : "No matching answer found";
+  return `
+    <div class="turn">
+      <div class="question-bubble">${escapeHtml(turn.question)}</div>
+      <div class="turn-meta">${escapeHtml(turn.location)} · ${escapeHtml(turn.time)}</div>
+      <div class="${cls}">
+        <h3>${title}</h3>
+        <div class="answer-text">${escapeHtml(turn.text)}</div>
+        ${turn.matchedQuestion ? `<p class="subtext">Matched question: ${escapeHtml(turn.matchedQuestion)}</p>` : ""}
+      </div>
     </div>
   `;
 }
@@ -280,26 +365,92 @@ function render() {
 
 function bindAskForm() {
   const form = document.getElementById("ask-form");
-  const answerArea = document.getElementById("answer-area");
+  const thread = document.getElementById("thread");
+  const threadHeader = document.getElementById("thread-header");
+  const emailInput = document.getElementById("email");
+  const locationInput = document.getElementById("location");
+  const questionInput = document.getElementById("question");
+  const submitBtn = document.getElementById("ask-submit");
+
+  // Remember email and location so they stay filled in between questions.
+  emailInput.addEventListener("input", () => {
+    profile.email = emailInput.value.trim();
+    saveSession(PROFILE_KEY, profile);
+  });
+  locationInput.addEventListener("change", () => {
+    profile.location = locationInput.value;
+    saveSession(PROFILE_KEY, profile);
+  });
+
+  // Enter sends the question; Shift+Enter adds a new line.
+  questionInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  document.getElementById("clear-conversation").addEventListener("click", () => {
+    conversation = [];
+    saveSession(HISTORY_KEY, conversation);
+    render();
+  });
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    answerArea.innerHTML = "<p class=\"subtext\">Searching HR documents…</p>";
-    const email = document.getElementById("email").value.trim();
-    const location = document.getElementById("location").value;
-    const question = document.getElementById("question").value.trim();
+    const email = emailInput.value.trim();
+    const location = locationInput.value;
+    const question = questionInput.value.trim();
+    if (!email || !location || !question) {
+      form.reportValidity();
+      return;
+    }
+
+    profile = { email, location };
+    saveSession(PROFILE_KEY, profile);
+
+    // Show a "searching" placeholder below the previous answers.
+    threadHeader.classList.remove("hidden");
+    const pending = document.createElement("div");
+    pending.className = "turn";
+    pending.innerHTML = `
+      <div class="question-bubble">${escapeHtml(question)}</div>
+      <p class="searching">Searching HR documents…</p>
+    `;
+    thread.appendChild(pending);
+    pending.scrollIntoView({ behavior: "smooth", block: "end" });
+
+    questionInput.value = "";
+    submitBtn.disabled = true;
+
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    let turn;
     try {
       const result = await gadget.findAnswer(email, location, question);
-      const cls = result.found ? "answer-card" : "answer-card not-found";
-      answerArea.innerHTML = `
-        <div class="${cls}">
-          <h3>${result.found ? "Answer" : "No matching answer found"}</h3>
-          <div class="answer-text">${escapeHtml(result.text)}</div>
-          ${result.matchedQuestion ? `<p class="subtext">Matched question: ${escapeHtml(result.matchedQuestion)}</p>` : ""}
-        </div>
-      `;
+      turn = {
+        question,
+        location,
+        time,
+        found: !!result.found,
+        text: result.text,
+        matchedQuestion: result.matchedQuestion || "",
+      };
     } catch (err) {
-      answerArea.innerHTML = `<div class="message error">Error: ${escapeHtml(err.message)}</div>`;
+      turn = { question, location, time, found: false, error: true, text: "Error: " + err.message };
     }
+
+    conversation.push(turn);
+    saveSession(HISTORY_KEY, conversation);
+
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = renderTurn(turn).trim();
+    const finished = wrapper.firstElementChild;
+    thread.replaceChild(finished, pending);
+    finished.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    document.querySelector('label[for="question"]').textContent = "Ask another question";
+    submitBtn.disabled = false;
+    questionInput.focus();
   });
 }
 
@@ -552,6 +703,14 @@ async function refreshQAList() {
   } catch (err) {
     listEl.innerHTML = `<li style="color:var(--danger)">Error loading list: ${escapeHtml(err.message)}</li>`;
   }
+}
+
+function escapeAttr(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function escapeHtml(text) {
