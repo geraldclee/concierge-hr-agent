@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "concierge-hr-agent",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+
+  // Static web UI (index.html, client.js, gadget-shim.js)
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // Durable Object that stores the HR documents and Q&A per location
+  "durable_objects": {
+    "bindings": [{ "name": "GADGET", "class_name": "Gadget" }]
+  },
+
+  // SQLite-backed Durable Objects work on the Workers Free plan
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Gadget"] }]
+}
