@@ -1,5 +1,4 @@
 const LOCATIONS = ["Singapore", "Switzerland"];
-const ADMIN_PASSWORD = "hradmin";
 
 const style = document.createElement("style");
 style.textContent = `
@@ -115,13 +114,49 @@ style.textContent = `
     background: #f0fdf4;
     border-radius: 8px;
     margin-top: 20px;
-    white-space: pre-wrap;
   }
+  .answer-card .answer-text { white-space: pre-wrap; }
   .answer-card.not-found {
     border-left-color: var(--danger);
     background: #fef2f2;
   }
   .answer-card h3 { margin: 0 0 8px; font-size: 1rem; color: #065f46; }
+  .thread { margin-top: 8px; }
+  .thread:empty { display: none; }
+  .turn { margin-top: 20px; }
+  .turn:first-child { margin-top: 12px; }
+  .turn .answer-card { margin-top: 8px; }
+  .question-bubble {
+    margin-left: auto;
+    max-width: 85%;
+    width: fit-content;
+    background: var(--primary);
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 14px 14px 4px 14px;
+    white-space: pre-wrap;
+  }
+  .turn-meta { text-align: right; color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+  .thread-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .thread-header h2 { margin: 0; font-size: 1rem; }
+  .link-btn {
+    background: none;
+    border: none;
+    color: var(--primary);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+    padding: 4px 0;
+  }
+  .link-btn:hover { text-decoration: underline; }
+  .searching { color: var(--muted); font-style: italic; margin-top: 8px; }
   .answer-card.not-found h3 { color: var(--danger); }
   .subtext { color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
   .message { padding: 12px; border-radius: 8px; margin-bottom: 16px; }
@@ -160,6 +195,29 @@ document.body.appendChild(app);
 let currentTab = "ask";
 let adminUnlocked = false;
 
+// Conversation history: [{ question, location, found, text, matchedQuestion, time }]
+const HISTORY_KEY = "hrConversation";
+const PROFILE_KEY = "hrProfile";
+let conversation = loadSession(HISTORY_KEY, []);
+let profile = loadSession(PROFILE_KEY, { email: "", location: "" });
+
+function loadSession(key, fallback) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSession(key, value) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage unavailable (e.g. private mode) - keep in memory only.
+  }
+}
+
 function renderHeader() {
   return `
     <header>
@@ -182,22 +240,48 @@ function renderAskView() {
   return `
     <div class="card">
       <form id="ask-form">
-        <label for="email">Work Email</label>
-        <input id="email" type="email" required placeholder="e.g. employee@company.com" />
+        <div class="two-cols">
+          <div>
+            <label for="email">Work Email</label>
+            <input id="email" type="email" required placeholder="e.g. employee@company.com" value="${escapeAttr(profile.email)}" />
+          </div>
+          <div>
+            <label for="location">Location</label>
+            <select id="location" required>
+              <option value="" disabled ${profile.location ? "" : "selected"}>Select your location</option>
+              ${LOCATIONS.map((l) => `<option value="${l}" ${profile.location === l ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+          </div>
+        </div>
 
-        <label for="location">Location</label>
-        <select id="location" required>
-          <option value="" disabled selected>Select your location</option>
-          ${LOCATIONS.map((l) => `<option value="${l}">${l}</option>`).join("")}
-        </select>
+        <div class="thread-header ${conversation.length ? "" : "hidden"}" id="thread-header">
+          <h2>Conversation</h2>
+          <button type="button" class="link-btn" id="clear-conversation">Clear conversation</button>
+        </div>
+        <div class="thread" id="thread">${conversation.map(renderTurn).join("")}</div>
 
-        <label for="question">Your Question</label>
+        <label for="question">${conversation.length ? "Ask another question" : "Your Question"}</label>
         <textarea id="question" required placeholder="e.g. How many days of annual leave do I get?"></textarea>
 
-        <button type="submit">Find Answer</button>
-        <p class="subtext">Answers are sourced only from uploaded HR documents.</p>
+        <button type="submit" id="ask-submit">Find Answer</button>
+        <p class="subtext">Answers are sourced only from uploaded HR documents. Press Enter to send, Shift+Enter for a new line.</p>
       </form>
-      <div id="answer-area"></div>
+    </div>
+  `;
+}
+
+function renderTurn(turn) {
+  const cls = turn.found ? "answer-card" : "answer-card not-found";
+  const title = turn.error ? "Something went wrong" : turn.found ? "Answer" : "No matching answer found";
+  return `
+    <div class="turn">
+      <div class="question-bubble">${escapeHtml(turn.question)}</div>
+      <div class="turn-meta">${escapeHtml(turn.location)} · ${escapeHtml(turn.time)}</div>
+      <div class="${cls}">
+        <h3>${title}</h3>
+        <div class="answer-text">${escapeHtml(turn.text)}</div>
+        ${turn.matchedQuestion ? `<p class="subtext">Matched question: ${escapeHtml(turn.matchedQuestion)}</p>` : ""}
+      </div>
     </div>
   `;
 }
@@ -208,7 +292,7 @@ function renderAdminLock() {
       <p>This area is for HR administrators only.</p>
       <input id="admin-pass" type="password" placeholder="Enter admin password" />
       <button class="btn" id="admin-unlock">Unlock</button>
-      <p class="subtext">Default password: <code>hradmin</code></p>
+      <p class="subtext">Ask your HR system owner for the admin password.</p>
     </div>
   `;
 }
@@ -281,38 +365,123 @@ function render() {
 
 function bindAskForm() {
   const form = document.getElementById("ask-form");
-  const answerArea = document.getElementById("answer-area");
+  const thread = document.getElementById("thread");
+  const threadHeader = document.getElementById("thread-header");
+  const emailInput = document.getElementById("email");
+  const locationInput = document.getElementById("location");
+  const questionInput = document.getElementById("question");
+  const submitBtn = document.getElementById("ask-submit");
+
+  // Remember email and location so they stay filled in between questions.
+  emailInput.addEventListener("input", () => {
+    profile.email = emailInput.value.trim();
+    saveSession(PROFILE_KEY, profile);
+  });
+  locationInput.addEventListener("change", () => {
+    profile.location = locationInput.value;
+    saveSession(PROFILE_KEY, profile);
+  });
+
+  // Enter sends the question; Shift+Enter adds a new line.
+  questionInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  document.getElementById("clear-conversation").addEventListener("click", () => {
+    conversation = [];
+    saveSession(HISTORY_KEY, conversation);
+    render();
+  });
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    answerArea.innerHTML = "<p class=\"subtext\">Searching HR documents…</p>";
-    const email = document.getElementById("email").value.trim();
-    const location = document.getElementById("location").value;
-    const question = document.getElementById("question").value.trim();
+    const email = emailInput.value.trim();
+    const location = locationInput.value;
+    const question = questionInput.value.trim();
+    if (!email || !location || !question) {
+      form.reportValidity();
+      return;
+    }
+
+    profile = { email, location };
+    saveSession(PROFILE_KEY, profile);
+
+    // Show a "searching" placeholder below the previous answers.
+    threadHeader.classList.remove("hidden");
+    const pending = document.createElement("div");
+    pending.className = "turn";
+    pending.innerHTML = `
+      <div class="question-bubble">${escapeHtml(question)}</div>
+      <p class="searching">Searching HR documents…</p>
+    `;
+    thread.appendChild(pending);
+    pending.scrollIntoView({ behavior: "smooth", block: "end" });
+
+    questionInput.value = "";
+    submitBtn.disabled = true;
+
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    let turn;
     try {
       const result = await gadget.findAnswer(email, location, question);
-      const cls = result.found ? "answer-card" : "answer-card not-found";
-      answerArea.innerHTML = `
-        <div class="${cls}">
-          <h3>${result.found ? "Answer" : "No matching answer found"}</h3>
-          <div>${escapeHtml(result.text)}</div>
-          ${result.matchedQuestion ? `<p class="subtext">Matched question: ${escapeHtml(result.matchedQuestion)}</p>` : ""}
-        </div>
-      `;
+      turn = {
+        question,
+        location,
+        time,
+        found: !!result.found,
+        text: result.text,
+        matchedQuestion: result.matchedQuestion || "",
+      };
     } catch (err) {
-      answerArea.innerHTML = `<div class="message error">Error: ${escapeHtml(err.message)}</div>`;
+      turn = { question, location, time, found: false, error: true, text: "Error: " + err.message };
     }
+
+    conversation.push(turn);
+    saveSession(HISTORY_KEY, conversation);
+
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = renderTurn(turn).trim();
+    const finished = wrapper.firstElementChild;
+    thread.replaceChild(finished, pending);
+    finished.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    document.querySelector('label[for="question"]').textContent = "Ask another question";
+    submitBtn.disabled = false;
+    questionInput.focus();
   });
 }
 
 function bindAdminLock() {
-  document.getElementById("admin-unlock").addEventListener("click", () => {
-    const pass = document.getElementById("admin-pass").value;
-    if (pass === ADMIN_PASSWORD) {
-      adminUnlocked = true;
-      render();
-    } else {
-      alertPassword("Incorrect password.");
+  const btn = document.getElementById("admin-unlock");
+  const input = document.getElementById("admin-pass");
+  async function tryUnlock() {
+    const pass = input.value;
+    if (!pass) {
+      alertPassword("Please enter the admin password.");
+      return;
     }
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    try {
+      const ok = await gadget.checkAdmin(pass);
+      if (ok) {
+        adminUnlocked = true;
+        render();
+        return;
+      }
+      alertPassword("Incorrect password.");
+    } catch (err) {
+      alertPassword("Could not verify password: " + err.message);
+    }
+    btn.disabled = false;
+    btn.textContent = "Unlock";
+  }
+  btn.addEventListener("click", tryUnlock);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") tryUnlock();
   });
 }
 
@@ -343,9 +512,11 @@ function parseQA(content) {
 
   // Normalize inline Q: / A: markers (common when text is extracted from PDFs
   // or Word documents) so each marker starts its own line.
+  // Only break the line when the marker follows a space/tab on the same line,
+  // so normal "Q:" / "A:" lines don't get an extra blank line in between.
   content = content
-    .replace(/(^|\s)(Q:\s*)/gi, "$1\n$2")
-    .replace(/(^|\s)(A:\s*)/gi, "$1\n$2")
+    .replace(/[ \t]+(Q:\s*)/g, "\n$1")
+    .replace(/[ \t]+(A:\s*)/g, "\n$1")
     .trim();
 
   // Text parsing: split by blank lines, each block may contain Q: and A: lines.
@@ -366,12 +537,13 @@ function parseQA(content) {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) {
-      if (started) flush();
+      // A blank line ends a pair only once both question and answer are present.
+      if (started && currentQ && currentA) flush();
       continue;
     }
     started = true;
-    const qMatch = line.match(/^Q[:：\-]?\s*(.*)$/i);
-    const aMatch = line.match(/^A[:：\-]?\s*(.*)$/i);
+    const qMatch = line.match(/^Q\s*[:：\-]\s*(.*)$/i);
+    const aMatch = line.match(/^A\s*[:：\-]\s*(.*)$/i);
     if (qMatch) {
       // A new question starts; save any previous pair.
       flush();
@@ -533,13 +705,130 @@ async function refreshQAList() {
   }
 }
 
+function escapeAttr(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
 }
 
+// ---------------------------------------------------------------------------
+// PDF text extraction
+// Uses Mozilla PDF.js (bundled in /vendor) which correctly decodes PDFs from
+// Word, Mac "Save as PDF", Google Docs, etc. Falls back to the simple built-in
+// extractor if PDF.js cannot be loaded.
+// ---------------------------------------------------------------------------
+let pdfjsLoading = null;
+
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfjsLoading) return pdfjsLoading;
+  pdfjsLoading = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/pdf.min.js";
+    script.onload = () => {
+      if (!window.pdfjsLib) {
+        reject(new Error("PDF reader failed to initialise."));
+        return;
+      }
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.js";
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = () => {
+      pdfjsLoading = null;
+      reject(new Error("Could not load the PDF reader."));
+    };
+    document.head.appendChild(script);
+  });
+  return pdfjsLoading;
+}
+
 async function extractPdfText(buffer) {
+  try {
+    const pdfjsLib = await loadPdfJs();
+    const text = await extractWithPdfJs(pdfjsLib, buffer);
+    if (text && text.trim().length >= 10) return text;
+  } catch (err) {
+    console.warn("PDF.js extraction failed, trying fallback:", err);
+  }
+  return legacyExtractPdfText(buffer);
+}
+
+// Rebuild lines and paragraphs from PDF.js text items using their positions,
+// so the server can split the document into meaningful paragraphs.
+async function extractWithPdfJs(pdfjsLib, buffer) {
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+  const pages = [];
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+
+    const lines = [];
+    let current = null;
+    for (const item of content.items) {
+      if (typeof item.str !== "string") continue;
+      const y = item.transform[5];
+      const x = item.transform[4];
+      const h = Math.abs(item.height || item.transform[3] || 10);
+      if (!current || Math.abs(current.y - y) > h * 0.5) {
+        if (current) lines.push(current);
+        current = { y, x, h, text: item.str };
+      } else {
+        current.text += item.str;
+        current.h = Math.max(current.h, h);
+      }
+    }
+    if (current) lines.push(current);
+
+    const cleaned = lines
+      .map((l) => ({ ...l, text: l.text.replace(/\s+/g, " ").trim() }))
+      .filter((l) => l.text.length > 0);
+
+    // Typical spacing between consecutive lines on this page.
+    const gaps = [];
+    for (let i = 1; i < cleaned.length; i++) {
+      const g = cleaned[i - 1].y - cleaned[i].y;
+      if (g > 0) gaps.push(g);
+    }
+    gaps.sort((a, b) => a - b);
+    const typicalGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 14;
+
+    let out = "";
+    for (let i = 0; i < cleaned.length; i++) {
+      const line = cleaned[i];
+      if (i > 0) {
+        const prev = cleaned[i - 1];
+        const gap = prev.y - line.y;
+        const startsBullet = /^[•·▪●◦\-–*]|^\d+[.)]\s/.test(line.text);
+        const prevIsHeading = prev.text.length < 60 && !/[.,;:]$/.test(prev.text);
+        if (gap > typicalGap * 1.4 || gap < 0) {
+          out += "\n\n"; // visible gap => new paragraph
+        } else if (startsBullet) {
+          out += "\n\n"; // each bullet point is its own answer chunk
+        } else if (prevIsHeading && /^[A-Z]/.test(line.text) && line.x <= prev.x + 2 && i === 1) {
+          out += "\n\n";
+        } else {
+          out += "\n";
+        }
+      }
+      out += line.text;
+    }
+    pages.push(out);
+  }
+
+  return pages.join("\n\n");
+}
+
+// Simple fallback extractor for basic PDFs (used only if PDF.js is unavailable).
+async function legacyExtractPdfText(buffer) {
   const fullBytes = new Uint8Array(buffer);
   const fullLatin = new TextDecoder("latin1").decode(fullBytes);
   let text = "";
@@ -592,7 +881,7 @@ async function extractPdfText(buffer) {
         const filterMatch = objBody.match(/\/Filter\s*\/FlateDecode/i);
         if (filterMatch) {
           try {
-            const ds = new DecompressionStream("deflate-raw");
+            const ds = new DecompressionStream("deflate");
             const writer = ds.writable.getWriter();
             writer.write(streamBytes);
             writer.close();
